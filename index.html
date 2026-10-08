@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="en-GB">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>STS Expenses</title>
+  <meta name="theme-color" content="#2E1B0E">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="STS Expenses">
+  <link rel="manifest" href="manifest.json">
+  <link rel="apple-touch-icon" href="icon-180.png">
+  <link rel="icon" href="icon-192.png">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="top">
+    <h1>STS Expenses</h1>
+    <button class="link" id="nav-settings" aria-label="Settings">Settings</button>
+  </header>
+
+  <!-- List -->
+  <main id="view-list" class="view">
+    <section class="summary">
+      <div>
+        <div class="label" id="month-label">This month</div>
+        <div class="big" id="month-total">S$0.00</div>
+      </div>
+      <div class="sync" id="sync-status"></div>
+    </section>
+    <ul class="list" id="list"></ul>
+    <p class="empty" id="empty">No expenses yet. Take a photo of a receipt to start.</p>
+  </main>
+
+  <!-- Edit -->
+  <main id="view-edit" class="view" hidden>
+    <img id="photo" class="photo" alt="Receipt photo">
+    <div class="ocr" id="ocr-status"></div>
+    <button class="secondary" id="btn-ai" type="button">Fix with AI</button>
+
+    <form id="form" autocomplete="off">
+      <label>Date <input type="date" name="date" required></label>
+      <label>Merchant <input name="merchant" required placeholder="e.g. Grab"></label>
+      <label>What was it for <input name="description" placeholder="e.g. Taxi to TFS workshop"></label>
+
+      <div class="row">
+        <label>Country <select name="country"></select></label>
+        <label>Currency <select name="currency"></select></label>
+      </div>
+      <div class="row">
+        <label>Total paid <input name="total" type="number" step="0.01" min="0" inputmode="decimal" required></label>
+        <label>GST / VAT incl. <input name="gst" type="number" step="0.01" min="0" inputmode="decimal"></label>
+      </div>
+
+      <div class="fx" id="fx-box" hidden>
+        <div id="fx-rate"></div>
+        <label>Total in SGD <input name="sgdTotal" type="number" step="0.01" min="0" inputmode="decimal"></label>
+        <small>Change this only to match your card statement.</small>
+      </div>
+
+      <label>P&amp;L line <select name="plLine" required></select></label>
+      <div class="warn" id="prepaid-warn" hidden>Prepaid items also need the Prepayments sheet. Ask Claude to "update the books" after saving.</div>
+      <label>Category (Incorpor8) <input name="category" list="categories" required></label>
+      <datalist id="categories"></datalist>
+      <label>Client <select name="client"></select></label>
+      <label>Paid by
+        <select name="paidBy"><option>Company</option><option>Director</option></select>
+      </label>
+      <label>Note <input name="note" placeholder="Optional"></label>
+
+      <div class="sgd-line" id="sgd-line"></div>
+      <div class="actions">
+        <button type="button" class="secondary" id="btn-cancel">Cancel</button>
+        <button type="submit" class="primary">Save to books</button>
+      </div>
+    </form>
+  </main>
+
+  <!-- Settings -->
+  <main id="view-settings" class="view" hidden>
+    <h2>Microsoft OneDrive</h2>
+    <p id="ms-status" class="muted"></p>
+    <form id="settings">
+      <label>App (client) ID <input name="clientId" placeholder="from Microsoft Entra"></label>
+      <label>Tenant ID <input name="tenant"></label>
+      <label>Folder in OneDrive <input name="basePath"></label>
+      <button type="button" class="secondary" id="btn-login">Sign in to Microsoft</button>
+
+      <h2>Fix with AI (Google Gemini, free)</h2>
+      <label>Gemini API key <input name="geminiKey" type="password"></label>
+      <label>Gemini model <input name="geminiModel"></label>
+
+      <h2>Defaults</h2>
+      <label>Clients (comma list) <input name="clients"></label>
+      <label>Paid by
+        <select name="paidBy"><option>Company</option><option>Director</option></select>
+      </label>
+      <div class="actions">
+        <button type="button" class="secondary" id="btn-settings-back">Back</button>
+        <button type="submit" class="primary">Save settings</button>
+      </div>
+    </form>
+    <p class="muted small">Your keys stay on this phone only.</p>
+  </main>
+
+  <nav class="bottom" id="capture-bar">
+    <label class="primary big-btn">Take photo<input type="file" accept="image/*" capture="environment" id="in-camera" hidden></label>
+    <label class="secondary big-btn">Choose photo<input type="file" accept="image/*" id="in-library" hidden></label>
+  </nav>
+
+  <div class="toast" id="toast" hidden></div>
+
+  <script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.28.1/lib/msal-browser.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js"></script>
+  <script src="config.js"></script>
+  <script src="db.js"></script>
+  <script src="fx.js"></script>
+  <script src="ocr.js"></script>
+  <script src="ai.js"></script>
+  <script src="graph.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
