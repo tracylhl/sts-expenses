@@ -101,25 +101,37 @@ function sentenceCase(s) {
 }
 
 // ---------- P&L line from the words on the receipt ----------
+// Long, distinctive stems are matched anywhere in a word ("restaur" survives OCR typos).
+// Short words need word edges. Chinese keywords are included for receipts read with Chinese OCR.
 const PL_RULES = [
-  ['COGS - Assessment Tools', /\b(rheti|enneagram|assessment|psychometric|hogan|mbti|talentsmart|strengthsfinder|disc profile)\b/i],
-  ['OpEx - Software & Subscriptions', /\b(subscription|software|saas|cloud|hosting|domain|zoom|microsoft|office 365|google workspace|adobe|canva|openai|anthropic|github|dropbox|notion|slack|itunes|app store|linkedin|squarespace|godaddy|namecheap)\b/i],
-  ['OpEx - Travel & Transport', /\b(grab|gojek|taxi|cab|comfortdelgro|cdg|tada|ryde|uber|mrt|smrt|sbs transit|ez-?link|transitlink|petrol|shell|esso|caltex|spc|parking|erp|airline|airlines|airways|scoot|jetstar|airasia|flight|boarding|hotel|resort|airbnb|booking\.com|agoda|hostel|train|ferry|toll|car rental|hertz|bus|metro|subway ticket)\b/i],
-  ['OpEx - Meals & Entertainment', /\b(restaurant|cafe|café|coffee|kopi|kopitiam|bistro|bar|pub|grill|kitchen|diner|eatery|food|bakery|bread|toast|laksa|noodles?|rice|chicken|pizza|burger|sushi|ramen|starbucks|mcdonald'?s|kfc|ya kun|dining|catering|lunch|dinner|breakfast|tea|bubble tea|gong cha|liho|koi|deli|buffet|meal|beverage|drinks?|dessert|ice cream|hawker|izakaya|brunch)\b/i],
-  ['OpEx - General & Admin', /\b(stationery|office|printer|ink|toner|paper|popular|daiso|ikea|courier|postage|singpost|lalamove|print|photocopy|bank charge|bank fee)\b/i],
+  ['COGS - Assessment Tools', /psychometric|enneagram|rheti|\b(assessment|hogan|mbti|talentsmart|strengthsfinder)\b|测评|測評|评估/i],
+  ['OpEx - Software & Subscriptions', /subscript|software|hosting|workspace|openai|anthropic|github|dropbox|squarespace|godaddy|namecheap|\b(saas|cloud|domain|zoom|microsoft|adobe|canva|notion|slack|itunes|linkedin)\b|订阅|訂閱|软件|軟件/i],
+  ['OpEx - Travel & Transport', /comfortdelgro|transitlink|airline|airways|airasia|jetstar|boarding|airbnb|booking\.com|rental|\b(grab|gojek|taxi|cab|cdg|tada|ryde|uber|mrt|smrt|ez-?link|petrol|shell|esso|caltex|spc|parking|erp|scoot|flight|hotel|resort|agoda|hostel|train|ferry|toll|hertz|bus|metro)\b|酒店|旅馆|旅館|机场|機場|航空|出租车|的士|停车|停車|火车|火車|地铁|地鐵|巴士|高铁|高鐵|车费|車費/i],
+  ['OpEx - Meals & Entertainment', /restaur|kopitiam|coffee|bistro|bakery|noodle|sushi|ramen|izakaya|buffet|catering|hawker|dessert|breakfast|brunch|lunch|dinner|starbucks|mcdonald|burger|pizza|steakhouse|teahouse|\b(cafe|café|kopi|bar|pub|grill|kitchen|diner|eatery|food|bread|toast|laksa|rice|chicken|dining|tea|deli|meal|drinks?|beverage|ya kun|kfc|koi|liho|gong cha)\b|餐厅|餐廳|餐馆|餐館|饭店|飯店|酒楼|酒樓|茶餐厅|小吃|美食|火锅|火鍋|烧烤|燒烤|点心|點心|面馆|麵館|粥|奶茶|咖啡|饮料|飲料|鸡|雞|鱼|魚|肉|汤|湯|饭|飯|面|麵|茶|菜/i],
+  ['OpEx - General & Admin', /stationery|photocopy|postage|singpost|lalamove|toner|\b(office|printer|ink|paper|popular|daiso|ikea|courier|print|bank charge|bank fee)\b|文具|办公|辦公|打印|邮政|郵政|快递|快遞/i],
 ];
 
-function classifyPL(merchant, text) {
-  for (const [line, re] of PL_RULES) if (re.test(merchant || '')) return line;   // the shop name is the strongest hint
-  let best = null, bestHits = 0;
-  for (const [line, re] of PL_RULES) {
-    const hits = (String(text || '').match(new RegExp(re.source, 'gi')) || []).length;
-    if (hits > bestHits) { best = line; bestHits = hits; }
+const countHits = (re, s) => (String(s || '').match(new RegExp(re.source, 'gi')) || []).length;
+
+// 1st: the name of the establishment (the shop name, then the top 3 lines where it is printed).
+// 2nd, only if the name is not clear: the items purchased (the whole text).
+// The first place with a match decides. OCR turns unreadable lines (e.g. Chinese) into random
+// English-looking junk that can match anything, so the items must never outvote the name.
+// Returns null when nothing matches, so the form asks you instead of guessing.
+function classifyPL(merchant, text, header) {
+  for (const where of [merchant, header, text]) {
+    let best = null, bestHits = 0;
+    for (const [line, re] of PL_RULES) {
+      const n = countHits(re, where);
+      if (n > bestHits) { best = line; bestHits = n; }
+    }
+    if (best) return best;
   }
-  return best || 'OpEx - General & Admin';
+  return null;
 }
 
 function parseReceipt(text) {
+  text = text.replace(/(?<=[一-鿿])[ 	]+(?=[一-鿿])/g, '');   // Chinese OCR puts spaces between characters
   const lines = text.split('\n').map((l) => l.trim()).filter(Boolean);
   const out = { merchant: '', date: findDate(text), total: null, gst: null, currency: findCurrency(text) };
   wholeAmounts = NO_DECIMALS.includes(out.currency) && !AMOUNT_RE.test(text);
@@ -143,6 +155,6 @@ function parseReceipt(text) {
     if (all.length) out.total = Math.max(...all);
   }
 
-  out.pl_line = classifyPL(out.merchant, text);
+  out.pl_line = classifyPL(out.merchant, text, lines.slice(0, 3).join(' '));
   return out;
 }

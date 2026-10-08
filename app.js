@@ -88,18 +88,27 @@ async function onPhoto(file) {
   f.date.value = todaySGT();
   f.country.value = 'Singapore'; f.currency.value = 'SGD';
   f.paidBy.value = settings.paidBy;
-  f.plLine.value = 'OpEx - General & Admin'; onPlLine();
+  f.plLine.value = ''; onPlLine();
   options(f.client, clients(), 'STS general (no client)');
   $('#photo').src = URL.createObjectURL(photo);
   show('edit');
   updateFx();
 
+  await readReceipt();
+}
+
+// Free OCR (English). "Fix with AI" handles other languages.
+async function readReceipt() {
+  const f = form.elements;
   $('#ocr-status').textContent = 'Reading receipt…';
   try {
-    const text = await runOCR(photo, (p) => ($('#ocr-status').textContent = `Reading receipt… ${Math.round(p * 100)}%`));
+    const text = await runOCR(current.photo, (p) => ($('#ocr-status').textContent = `Reading receipt… ${Math.round(p * 100)}%`));
     const r = parseReceipt(text);
-    fill({ merchant: r.merchant, date: r.date, total: r.total, currency: r.currency, pl_line: r.pl_line });
-    $('#ocr-status').textContent = 'Check the details. Tap "Fix with AI" if something is wrong.';
+    fill({ merchant: r.merchant, date: r.date, total: r.total, pl_line: r.pl_line });
+    const hint = r.currency && r.currency !== f.currency.value
+      ? ` The receipt looks like ${r.currency}, but the country is ${f.country.value}. Change the country if that is wrong.` : '';
+    const pick = f.plLine.value ? '' : ' Choose the P&L line.';
+    $('#ocr-status').textContent = 'Check the details.' + pick + hint;
   } catch (e) {
     $('#ocr-status').textContent = 'Could not read the receipt. Type the details or tap "Fix with AI".';
   }
@@ -110,8 +119,13 @@ function fill(d) {
   if (d.merchant) f.merchant.value = d.merchant;
   if (d.description) f.description.value = d.description;
   if (d.date && /^\d{4}-\d{2}-\d{2}$/.test(d.date)) f.date.value = d.date;
-  if (d.country && CONFIG.countries.some(([c]) => c === d.country)) f.country.value = d.country;
-  if (d.currency && CONFIG.currencies.includes(d.currency)) f.currency.value = d.currency;
+  // The country decides the currency. A currency symbol on the receipt never changes it.
+  const known = CONFIG.countries.find(([c]) => c === d.country);
+  if (known) {
+    f.country.value = known[0];
+    if (known[1]) f.currency.value = known[1];
+    else if (d.currency && CONFIG.currencies.includes(d.currency)) f.currency.value = d.currency;   // country "Other"
+  }
   if (d.total != null && !isNaN(d.total)) f.total.value = r2(d.total).toFixed(2);
   if (d.pl_line && CONFIG.plLines.includes(d.pl_line)) { f.plLine.value = d.pl_line; onPlLine(); }
   updateFx();
@@ -235,7 +249,7 @@ async function start() {
   const f = form.elements;
   options(f.country, CONFIG.countries.map(([c]) => c));
   options(f.currency, CONFIG.currencies);
-  options(f.plLine, CONFIG.plLines);
+  options(f.plLine, CONFIG.plLines, 'Choose P&L line…');
   $('#categories').innerHTML = CONFIG.categories.map((c) => `<option value="${c}">`).join('');
 
   f.country.onchange = () => {

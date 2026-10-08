@@ -7,7 +7,7 @@ merchant (string, the clean shop or supplier name in Title Case, without "Pte Lt
 description (string, under 10 words, what was bought, e.g. "Team lunch" or "Taxi to client workshop"),
 date (YYYY-MM-DD; receipts are usually day-first, e.g. 05/10/2026 is 5 Oct 2026),
 currency (ISO 4217 code, e.g. SGD),
-country (country where the purchase happened),
+country (where the purchase happened; exactly one of: ${CONFIG.countries.map(([c]) => c).join('; ')}),
 total (number, the final amount paid as printed on the receipt, including all tax and service charge; never a subtotal),
 pl_line (the best match, exactly one of: ${CONFIG.plLines.join('; ')}. Food and drink = "OpEx - Meals & Entertainment". Taxi, ride-hailing, flights, hotels, parking, fuel = "OpEx - Travel & Transport". Assessment or psychometric tests = "COGS - Assessment Tools").
 Use null for anything you cannot read.`;
