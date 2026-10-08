@@ -5,7 +5,6 @@ let settings = loadSettings();
 let current = null;      // expense being edited
 let sgdManual = false;   // true once the user types the SGD total by hand
 let syncing = false;
-let guess = false;       // true while the P&L line is only a fallback guess
 
 // ---------- settings ----------
 function loadSettings() {
@@ -66,8 +65,7 @@ async function renderList() {
       <span class="s"></span><span class="st ${e.status}">${label}</span>`;
     li.querySelector('.m').textContent = e.merchant;
     li.querySelector('.s').textContent = [e.date.split('-').reverse().join('/'), e.client || 'STS general',
-      e.currency !== 'SGD' ? `${e.currency} ${e.total.toFixed(2)}` : '',
-      e.split > 1 ? `split ${e.split} ways` : ''].filter(Boolean).join(' · ');
+      e.currency !== 'SGD' ? `${e.currency} ${e.total.toFixed(2)}` : ''].filter(Boolean).join(' · ');
     if (e.status === 'error') {
       const p = document.createElement('span'); p.className = 's'; p.style.gridColumn = '1 / -1';
       p.textContent = e.error; li.append(p);
@@ -83,14 +81,14 @@ async function renderList() {
 async function onPhoto(file) {
   if (!file) return;
   const photo = await compress(file);
-  current = { id: crypto.randomUUID(), photo, original: file, createdAt: new Date().toISOString() };   // OCR reads the original; photo is the smaller upload copy
+  current = { id: crypto.randomUUID(), photo, createdAt: new Date().toISOString() };
   sgdManual = false;
   form.reset();
   const f = form.elements;
   f.date.value = todaySGT();
   f.country.value = 'Singapore'; f.currency.value = 'SGD';
   f.paidBy.value = settings.paidBy;
-  f.plLine.value = ''; guess = false; $('#guess-warn').hidden = true; onPlLine();
+  f.plLine.value = ''; onPlLine();
   options(f.client, clients(), 'STS general (no client)');
   $('#photo').src = URL.createObjectURL(photo);
   show('edit');
@@ -104,13 +102,13 @@ async function readReceipt() {
   const f = form.elements;
   $('#ocr-status').textContent = 'Reading receipt…';
   try {
-    const ocr = await runOCR(current.original || current.photo, (p) => ($('#ocr-status').textContent = `Reading receipt… ${Math.round(p * 100)}%`));
-    const r = parseReceipt(ocr.text, ocr.lines);
+    const text = await runOCR(current.photo, (p) => ($('#ocr-status').textContent = `Reading receipt… ${Math.round(p * 100)}%`));
+    const r = parseReceipt(text);
     fill({ merchant: r.merchant, date: r.date, total: r.total, pl_line: r.pl_line });
-    const pick = guess ? ' The P&L line is a guess. Please check it.' : '';
-    const tot = r.totalGuess ? ' The total is a guess. Please check it against the receipt.' : '';
-    f.total.classList.toggle('check', !!r.totalGuess);
-    $('#ocr-status').textContent = 'Check the details.' + pick + tot;
+    const hint = r.currency && r.currency !== f.currency.value
+      ? ` The receipt looks like ${r.currency}, but the country is ${f.country.value}. Change the country if that is wrong.` : '';
+    const pick = f.plLine.value ? '' : ' Choose the P&L line.';
+    $('#ocr-status').textContent = 'Check the details.' + pick + hint;
   } catch (e) {
     $('#ocr-status').textContent = 'Could not read the receipt. Type the details or tap "Fix with AI".';
   }
@@ -129,31 +127,8 @@ function fill(d) {
     else if (d.currency && CONFIG.currencies.includes(d.currency)) f.currency.value = d.currency;   // country "Other"
   }
   if (d.total != null && !isNaN(d.total)) f.total.value = r2(d.total).toFixed(2);
-  if (d.pl_line && CONFIG.plLines.includes(d.pl_line)) { f.plLine.value = d.pl_line; guess = false; onPlLine(); }
-  applyMemory();
-  if (!f.plLine.value) { f.plLine.value = 'OpEx - General & Admin'; guess = true; onPlLine(); }   // never leave it blank
-  $('#guess-warn').hidden = !guess;
+  if (d.pl_line && CONFIG.plLines.includes(d.pl_line)) { f.plLine.value = d.pl_line; onPlLine(); }
   updateFx();
-}
-
-// The app remembers the P&L line and category you saved for each shop, and uses them next time.
-const memKey = (m) => String(m || '').toLowerCase().replace(/[^a-z0-9一-鿿]+/g, ' ').trim();
-function readMemory() {
-  try { return JSON.parse(localStorage.getItem('plMemory') || '{}'); } catch (e) { return {}; }
-}
-function remember(v) {
-  if (!memKey(v.merchant)) return;
-  try {
-    const all = readMemory();
-    all[memKey(v.merchant)] = { plLine: v.plLine, category: v.category };
-    localStorage.setItem('plMemory', JSON.stringify(all));
-  } catch (e) { /* storage blocked: skip */ }
-}
-function applyMemory() {
-  const f = form.elements, m = readMemory()[memKey(f.merchant.value)];
-  if (!m || !CONFIG.plLines.includes(m.plLine)) return;
-  f.plLine.value = m.plLine; guess = false; onPlLine();
-  if (m.category) f.category.value = m.category;
 }
 
 function onPlLine() {
@@ -186,9 +161,8 @@ async function updateFx() {
 
 function updateSgdLine() {
   const v = values();
-  const note = v.split > 1 ? ` (your share: ${sgd(v.sgdFull)} ÷ ${v.split})`
-    : v.currency === 'SGD' ? ' (same as the receipt total)' : ` (${v.currency} ${v.total.toFixed(2)} converted)`;
-  $('#sgd-line').textContent = v.sgdAmount > 0 ? `Goes into books: ${sgd(v.sgdAmount)}` + note : '';
+  $('#sgd-line').textContent = v.sgdAmount > 0 ? `Goes into books: ${sgd(v.sgdAmount)}` +
+    (v.currency === 'SGD' ? ' (same as the receipt total)' : ` (${v.currency} ${v.total.toFixed(2)} converted)`) : '';
 }
 
 // Turns the form into the expense record. SGD amounts are what goes into the books.
@@ -199,12 +173,11 @@ function values() {
   const total = r2(f.total.value);
   const foreign = f.currency.value !== 'SGD';
   const sgdTotal = foreign ? r2(f.sgdTotal.value) : total;
-  const split = Math.min(20, Math.max(1, Math.floor(+f.split.value) || 1));   // 1 = you pay it all
   return {
     date: f.date.value, merchant: cleanMerchant(f.merchant.value) || f.merchant.value.trim(),
     description: sentenceCase(f.description.value),
     country: f.country.value, currency: f.currency.value || 'SGD', total,
-    split, sgdFull: sgdTotal, sgdAmount: r2(sgdTotal / split), sgdGst: 0, sgdManual: foreign && sgdManual,   // the books get your share only
+    sgdAmount: sgdTotal, sgdGst: 0, sgdManual: foreign && sgdManual,
     rate: current?.fx?.rate || null, rateSource: current?.fx?.source || 'typed by hand', rateDate: current?.fx?.date || '',
     plLine: f.plLine.value, category: f.category.value.trim(), client: f.client.value,
     paidBy: f.paidBy.value, note: f.note.value.trim(),
@@ -216,8 +189,6 @@ async function onSave(ev) {
   const v = values();
   if (v.currency !== 'SGD' && !(v.sgdAmount > 0)) return toast('Type the SGD total first.');
   if (!(v.sgdAmount > 0)) return toast('The amount must be more than 0.');
-  remember(v);
-  delete current.original;   // not stored: only the compressed copy is kept and uploaded
   await DB.put({ ...current, ...v, status: 'queued' });
   current = null;
   show('list');
@@ -288,11 +259,9 @@ async function start() {
   };
   f.currency.onchange = () => { sgdManual = false; updateFx(); };
   f.date.onchange = updateFx;
-  f.total.oninput = () => { f.total.classList.remove('check'); updateFx(); };
-  f.split.oninput = updateSgdLine;
+  f.total.oninput = updateFx;
   f.sgdTotal.oninput = () => { sgdManual = true; updateSgdLine(); };
-  f.plLine.onchange = () => { guess = false; $('#guess-warn').hidden = true; onPlLine(); };
-  f.merchant.onchange = () => { applyMemory(); $('#guess-warn').hidden = !guess; };
+  f.plLine.onchange = onPlLine;
   form.onsubmit = onSave;
 
   $('#in-camera').onchange = (e) => { onPhoto(e.target.files[0]); e.target.value = ''; };

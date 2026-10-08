@@ -1,6 +1,6 @@
 // Offline support: keep the app files and the OCR library on the phone.
 // Change VERSION after editing any app file so phones pick up the new copy.
-const VERSION = 'sts-expenses-v7';
+const VERSION = 'sts-expenses-v3';
 const SHELL = ['./', 'index.html', 'styles.css', 'config.js', 'db.js', 'fx.js', 'ocr.js', 'ai.js', 'graph.js',
   'app.js', 'manifest.json', 'icon-180.png', 'icon-192.png', 'icon-512.png'];
 const CACHE_HOSTS = ['cdn.jsdelivr.net', 'tessdata.projectnaptha.com', 'fonts.googleapis.com', 'fonts.gstatic.com'];

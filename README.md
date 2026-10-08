@@ -56,8 +56,7 @@ The iPhone camera and the Microsoft sign-in need a secure (https) web address.
 1. Tap **Take photo**.
 2. Check the fields. Tap **Fix with AI** if something is wrong.
 3. Pick the **P&L line**, the **client** and **Paid by**.
-4. Sharing the bill? Set **Split the bill between** to the number of people, including you. Only your share goes into the books. The Notes column records the split and the receipt total.
-5. Tap **Save to books**.
+4. Tap **Save to books**.
 
 To correct a saved expense, edit the row in Excel by hand. The app never edits saved rows.
 

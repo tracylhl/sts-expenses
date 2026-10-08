@@ -166,7 +166,6 @@ function buildRow(r, exp, tag) {
       ? `Orig: ${exp.currency} ${exp.total.toLocaleString('en-SG', { minimumFractionDigits: 2 })} @ ${exp.rate} (${exp.rateSource}, ${exp.rateDate})` +
         (exp.sgdManual ? '; SGD typed by hand (card statement)' : '') + `, ${exp.country}`
       : '',
-    exp.split > 1 ? `Split ${exp.split} ways: my share of ${exp.currency} ${exp.total.toLocaleString('en-SG', { minimumFractionDigits: 2 })}` : '',
     exp.client ? `Client: ${exp.client}` : '',
     exp.note || '',
     exp.receiptUrl ? `Receipt: ${exp.receiptUrl}` : '',
