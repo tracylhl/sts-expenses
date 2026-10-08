@@ -3,7 +3,7 @@
 
 const AI_PROMPT = `You read a single receipt photo for a Singapore company's expense records.
 Return JSON only, with these keys:
-merchant (string, the clean shop or supplier name in Title Case, without "Pte Ltd", addresses or codes),
+merchant (string, the shop or supplier name exactly as printed or shown as the logo at the top of THIS receipt, in Title Case, without "Pte Ltd", addresses or codes. Never guess a name that is not on the receipt, and never use a website or review-site name; use null if unreadable),
 description (string, under 10 words, what was bought, e.g. "Team lunch" or "Taxi to client workshop"),
 date (YYYY-MM-DD; receipts are usually day-first, e.g. 05/10/2026 is 5 Oct 2026),
 currency (ISO 4217 code, e.g. SGD),

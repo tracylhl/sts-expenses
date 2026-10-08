@@ -1,11 +1,32 @@
 // Free on-phone OCR (Tesseract.js) plus simple rules for Singapore-style receipts.
 
+// Grey-scale + contrast stretch (and enlarge small photos). Reads prices, dates and addresses far better.
+async function prepareForOCR(blob) {
+  const img = await createImageBitmap(blob);
+  const long = Math.max(img.width, img.height);
+  const k = long < 1500 ? 1500 / long : long > 2200 ? 2200 / long : 1;   // 1500–2200 px on the long edge reads best
+  const c = document.createElement('canvas');
+  c.width = Math.round(img.width * k); c.height = Math.round(img.height * k);
+  const x = c.getContext('2d');
+  x.drawImage(img, 0, 0, c.width, c.height);
+  const d = x.getImageData(0, 0, c.width, c.height), p = d.data;
+  const g = new Uint8Array(c.width * c.height);
+  for (let i = 0, j = 0; i < p.length; i += 4, j++) g[j] = 0.299 * p[i] + 0.587 * p[i + 1] + 0.114 * p[i + 2];
+  const s = Uint8Array.from(g).sort();
+  const lo = s[Math.floor(s.length * 0.02)], span = Math.max(1, s[Math.floor(s.length * 0.98)] - lo);
+  for (let i = 0, j = 0; i < p.length; i += 4, j++) {
+    p[i] = p[i + 1] = p[i + 2] = Math.max(0, Math.min(255, ((g[j] - lo) / span) * 255));
+  }
+  x.putImageData(d, 0, 0);
+  return new Promise((res) => c.toBlob(res, 'image/png'));
+}
+
 async function runOCR(blob, onProgress) {
   const worker = await Tesseract.createWorker('eng', 1, {
     logger: (m) => m.status === 'recognizing text' && onProgress && onProgress(m.progress),
   });
   try {
-    const { data } = await worker.recognize(blob);
+    const { data } = await worker.recognize(await prepareForOCR(blob).catch(() => blob));
     return data.text || '';
   } finally {
     await worker.terminate();
@@ -27,7 +48,7 @@ function amountsIn(line) {
 function isoDate(y, m, d) {
   y = +y; m = +m; d = +d;
   if (y < 100) y += 2000;
-  if (m < 1 || m > 12 || d < 1 || d > 31 || y < 2020 || y > 2100) return null;
+  if (m < 1 || m > 12 || d < 1 || d > 31 || y < 2000 || y > 2100) return null;
   return `${y}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
 }
 
@@ -37,7 +58,7 @@ function findDate(text) {
     const r = isoDate(m[1], m[2], m[3]); if (r) return r;
   }
   // Day-first (Singapore): 05/10/2026, 5-10-26, 05.10.2026
-  if ((m = text.match(/\b(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{2,4})\b/))) {
+  if ((m = text.match(/\b(\d{1,2})\s*[\/\-.]\s*(\d{1,2})\s*[\/\-.]\s*(\d{2,4})\b/))) {
     const r = isoDate(m[3], m[2], m[1]); if (r) return r;
   }
   if ((m = text.match(/\b(\d{1,2})[\s\-]*(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*[\s,'\-]*(\d{2,4})\b/i))) {
@@ -62,8 +83,6 @@ function findCurrency(text) {
 }
 
 // ---------- formatting ----------
-const COMPANY_WORDS = /\b(pte\.?|ltd\.?|private|limited|sdn\.?|bhd\.?|inc\.?|llp|co\.?)\b/gi;
-const NOT_A_NAME = /receipt|tax invoice|invoice|welcome|thank|\btel\b|phone|\bgst\b|\breg\b|cashier|\border\b|\btable\b|\bdate\b|\btime\b|www\.|\.com/i;
 const KNOWN_ACRONYMS = ['NTUC', 'DBS', 'UOB', 'OCBC', 'SMRT', 'SBS', 'IKEA', 'NUS', 'NTU', 'CDG', 'ERP', 'MRT', 'DHL', 'UPS'];
 
 function titleCase(s) {
@@ -74,25 +93,16 @@ function titleCase(s) {
   }).join(' ');
 }
 
-// Turns messy OCR text such as "|§ KOPITIAM caFE 7 PTE LTD" into "Kopitiam Cafe".
+// Back to the original rule: the name is the first line with real words (no "receipt", "invoice", "welcome",
+// "thank"). Only stray symbols are removed and Title Case is applied. No words are thrown away.
 function cleanMerchant(raw) {
-  let s = String(raw || '').replace(COMPANY_WORDS, ' ');
-  s = s.replace(/[^\p{L}\p{N}&'\-. ]/gu, ' ').replace(/(?<=\p{L})0(?=\p{L})/gu, 'o');   // OCR reads the letter o as zero
-  const words = s.split(/\s+/).map((w) => w.replace(/^[-'.]+|[-'.]+$/g, '')).filter((w) => {
-    if (w === '&') return true;
-    const letters = (w.match(/\p{L}/gu) || []).length;
-    return letters >= 2 && letters / w.length >= 0.7;           // drops stray symbols, digits and mixed junk
-  });
-  return titleCase(words.join(' ')).slice(0, 60).trim();
+  const s = String(raw || '').replace(/[^\p{L}\p{N}&'.,\-() ]/gu, ' ').replace(/\s+/g, ' ').trim();
+  return titleCase(s).slice(0, 60);
 }
 
 function pickMerchant(lines) {
-  for (const l of lines.slice(0, 8)) {
-    if (NOT_A_NAME.test(l)) continue;
-    const c = cleanMerchant(l);
-    if ((c.match(/\p{L}/gu) || []).length >= 3) return c;
-  }
-  return '';
+  const l = lines.find((x) => /\p{L}{3,}/u.test(x) && !/receipt|tax invoice|invoice|welcome|thank/i.test(x));
+  return l ? cleanMerchant(l) : '';
 }
 
 function sentenceCase(s) {
@@ -107,7 +117,7 @@ const PL_RULES = [
   ['COGS - Assessment Tools', /psychometric|enneagram|rheti|\b(assessment|hogan|mbti|talentsmart|strengthsfinder)\b|测评|測評|评估/i],
   ['OpEx - Software & Subscriptions', /subscript|software|hosting|workspace|openai|anthropic|github|dropbox|squarespace|godaddy|namecheap|\b(saas|cloud|domain|zoom|microsoft|adobe|canva|notion|slack|itunes|linkedin)\b|订阅|訂閱|软件|軟件/i],
   ['OpEx - Travel & Transport', /comfortdelgro|transitlink|airline|airways|airasia|jetstar|boarding|airbnb|booking\.com|rental|\b(grab|gojek|taxi|cab|cdg|tada|ryde|uber|mrt|smrt|ez-?link|petrol|shell|esso|caltex|spc|parking|erp|scoot|flight|hotel|resort|agoda|hostel|train|ferry|toll|hertz|bus|metro)\b|酒店|旅馆|旅館|机场|機場|航空|出租车|的士|停车|停車|火车|火車|地铁|地鐵|巴士|高铁|高鐵|车费|車費/i],
-  ['OpEx - Meals & Entertainment', /restaur|kopitiam|coffee|bistro|bakery|noodle|sushi|ramen|izakaya|buffet|catering|hawker|dessert|breakfast|brunch|lunch|dinner|starbucks|mcdonald|burger|pizza|steakhouse|teahouse|\b(cafe|café|kopi|bar|pub|grill|kitchen|diner|eatery|food|bread|toast|laksa|rice|chicken|dining|tea|deli|meal|drinks?|beverage|ya kun|kfc|koi|liho|gong cha)\b|餐厅|餐廳|餐馆|餐館|饭店|飯店|酒楼|酒樓|茶餐厅|小吃|美食|火锅|火鍋|烧烤|燒烤|点心|點心|面馆|麵館|粥|奶茶|咖啡|饮料|飲料|鸡|雞|鱼|魚|肉|汤|湯|饭|飯|面|麵|茶|菜/i],
+  ['OpEx - Meals & Entertainment', /restaur|kopitiam|coffee|bistro|bakery|noodle|sushi|ramen|izakaya|buffet|catering|hawker|dessert|breakfast|brunch|lunch|dinner|starbucks|mcdonald|burger|pizza|steakhouse|teahouse|mocha|latte|cappuccino|espresso|americano|frappe|smoothie|juice|pastry|cake|sandwich|salad|pasta|steak|fries|wings|beer|wine|cocktail|dim ?sum|takeaway|take-away|dine-?in|service charge|\d+ ?% ?(svc|service)|\btable\b|\bguests?\b|\bdiners\b|\b(cafe|café|kopi|bar|pub|grill|kitchen|diner|eatery|food|bread|toast|laksa|rice|chicken|dining|tea|deli|meal|drinks?|beverage|ya kun|kfc|koi|liho|gong cha)\b|餐厅|餐廳|餐馆|餐館|饭店|飯店|酒楼|酒樓|茶餐厅|小吃|美食|火锅|火鍋|烧烤|燒烤|点心|點心|面馆|麵館|粥|奶茶|咖啡|饮料|飲料|鸡|雞|鱼|魚|肉|汤|湯|饭|飯|面|麵|茶|菜/i],
   ['OpEx - General & Admin', /stationery|photocopy|postage|singpost|lalamove|toner|\b(office|printer|ink|paper|popular|daiso|ikea|courier|print|bank charge|bank fee)\b|文具|办公|辦公|打印|邮政|郵政|快递|快遞/i],
 ];
 
@@ -139,11 +149,16 @@ function parseReceipt(text) {
 
   out.merchant = pickMerchant(lines);
 
-  // Total: prefer "grand total", then other total-like lines, searching from the bottom.
-  const totalRes = [/grand\s*total/i, /(total\s*(amount|due|payable|sgd)?|amount\s*due|net+\s*total|balance\s*due|to\s*pay)/i];
-  for (const re of totalRes) {
+  // Total, in order of trust: "grand total" -> a "total" line (OCR typos like "Tota]" allowed) ->
+  // the card/payment line ("VISA 12.00") -> the biggest plain amount. Subtotal, discount and "%" lines are never used.
+  const TOTAL = /\b(?:grand\s*)?t[o0]ta[l1i|\]!]\s*(?:amount|due|payable|sgd)?|amount\s*due|net+\s*total|balance\s*due|to\s*pay\b/i;
+  const GRAND = /grand\s*t[o0]ta[l1i|\]!]/i;
+  const PAYMENT = /\b(visa|master\s*card|mastercard|amex|diners|nets|paynow|paylah|credit|debit|card)\b/i;
+  const SKIP = /sub\s*-?\s*t[o0]ta|%|discount|disc\b|change|tender|cash\b|rounding/i;
+  const usable = (l) => !SKIP.test(l) && amountsIn(l).length;
+  for (const re of [GRAND, TOTAL, PAYMENT]) {
     for (let i = lines.length - 1; i >= 0 && out.total == null; i--) {
-      if (re.test(lines[i]) && !/sub\s*-?\s*total/i.test(lines[i])) {
+      if (re.test(lines[i]) && (re !== PAYMENT || !/discount|%/i.test(lines[i])) && !/sub\s*-?\s*t[o0]ta/i.test(lines[i])) {
         const a = amountsIn(lines[i]);
         if (a.length) out.total = a[a.length - 1];
       }
@@ -151,7 +166,7 @@ function parseReceipt(text) {
     if (out.total != null) break;
   }
   if (out.total == null) {
-    const all = lines.flatMap(amountsIn);
+    const all = lines.filter(usable).flatMap(amountsIn);
     if (all.length) out.total = Math.max(...all);
   }
 

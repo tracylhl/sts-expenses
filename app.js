@@ -5,6 +5,7 @@ let settings = loadSettings();
 let current = null;      // expense being edited
 let sgdManual = false;   // true once the user types the SGD total by hand
 let syncing = false;
+let guess = false;       // true while the P&L line is only a fallback guess
 
 // ---------- settings ----------
 function loadSettings() {
@@ -81,14 +82,14 @@ async function renderList() {
 async function onPhoto(file) {
   if (!file) return;
   const photo = await compress(file);
-  current = { id: crypto.randomUUID(), photo, createdAt: new Date().toISOString() };
+  current = { id: crypto.randomUUID(), photo, original: file, createdAt: new Date().toISOString() };   // OCR reads the original; photo is the smaller upload copy
   sgdManual = false;
   form.reset();
   const f = form.elements;
   f.date.value = todaySGT();
   f.country.value = 'Singapore'; f.currency.value = 'SGD';
   f.paidBy.value = settings.paidBy;
-  f.plLine.value = ''; onPlLine();
+  f.plLine.value = ''; guess = false; $('#guess-warn').hidden = true; onPlLine();
   options(f.client, clients(), 'STS general (no client)');
   $('#photo').src = URL.createObjectURL(photo);
   show('edit');
@@ -102,13 +103,11 @@ async function readReceipt() {
   const f = form.elements;
   $('#ocr-status').textContent = 'Reading receipt…';
   try {
-    const text = await runOCR(current.photo, (p) => ($('#ocr-status').textContent = `Reading receipt… ${Math.round(p * 100)}%`));
+    const text = await runOCR(current.original || current.photo, (p) => ($('#ocr-status').textContent = `Reading receipt… ${Math.round(p * 100)}%`));
     const r = parseReceipt(text);
     fill({ merchant: r.merchant, date: r.date, total: r.total, pl_line: r.pl_line });
-    const hint = r.currency && r.currency !== f.currency.value
-      ? ` The receipt looks like ${r.currency}, but the country is ${f.country.value}. Change the country if that is wrong.` : '';
-    const pick = f.plLine.value ? '' : ' Choose the P&L line.';
-    $('#ocr-status').textContent = 'Check the details.' + pick + hint;
+    const pick = guess ? ' The P&L line is a guess. Please check it.' : '';
+    $('#ocr-status').textContent = 'Check the details.' + pick;
   } catch (e) {
     $('#ocr-status').textContent = 'Could not read the receipt. Type the details or tap "Fix with AI".';
   }
@@ -127,8 +126,31 @@ function fill(d) {
     else if (d.currency && CONFIG.currencies.includes(d.currency)) f.currency.value = d.currency;   // country "Other"
   }
   if (d.total != null && !isNaN(d.total)) f.total.value = r2(d.total).toFixed(2);
-  if (d.pl_line && CONFIG.plLines.includes(d.pl_line)) { f.plLine.value = d.pl_line; onPlLine(); }
+  if (d.pl_line && CONFIG.plLines.includes(d.pl_line)) { f.plLine.value = d.pl_line; guess = false; onPlLine(); }
+  applyMemory();
+  if (!f.plLine.value) { f.plLine.value = 'OpEx - General & Admin'; guess = true; onPlLine(); }   // never leave it blank
+  $('#guess-warn').hidden = !guess;
   updateFx();
+}
+
+// The app remembers the P&L line and category you saved for each shop, and uses them next time.
+const memKey = (m) => String(m || '').toLowerCase().replace(/[^a-z0-9一-鿿]+/g, ' ').trim();
+function readMemory() {
+  try { return JSON.parse(localStorage.getItem('plMemory') || '{}'); } catch (e) { return {}; }
+}
+function remember(v) {
+  if (!memKey(v.merchant)) return;
+  try {
+    const all = readMemory();
+    all[memKey(v.merchant)] = { plLine: v.plLine, category: v.category };
+    localStorage.setItem('plMemory', JSON.stringify(all));
+  } catch (e) { /* storage blocked: skip */ }
+}
+function applyMemory() {
+  const f = form.elements, m = readMemory()[memKey(f.merchant.value)];
+  if (!m || !CONFIG.plLines.includes(m.plLine)) return;
+  f.plLine.value = m.plLine; guess = false; onPlLine();
+  if (m.category) f.category.value = m.category;
 }
 
 function onPlLine() {
@@ -189,6 +211,8 @@ async function onSave(ev) {
   const v = values();
   if (v.currency !== 'SGD' && !(v.sgdAmount > 0)) return toast('Type the SGD total first.');
   if (!(v.sgdAmount > 0)) return toast('The amount must be more than 0.');
+  remember(v);
+  delete current.original;   // not stored: only the compressed copy is kept and uploaded
   await DB.put({ ...current, ...v, status: 'queued' });
   current = null;
   show('list');
@@ -261,7 +285,8 @@ async function start() {
   f.date.onchange = updateFx;
   f.total.oninput = updateFx;
   f.sgdTotal.oninput = () => { sgdManual = true; updateSgdLine(); };
-  f.plLine.onchange = onPlLine;
+  f.plLine.onchange = () => { guess = false; $('#guess-warn').hidden = true; onPlLine(); };
+  f.merchant.onchange = () => { applyMemory(); $('#guess-warn').hidden = !guess; };
   form.onsubmit = onSave;
 
   $('#in-camera').onchange = (e) => { onPhoto(e.target.files[0]); e.target.value = ''; };
