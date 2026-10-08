@@ -66,7 +66,8 @@ async function renderList() {
       <span class="s"></span><span class="st ${e.status}">${label}</span>`;
     li.querySelector('.m').textContent = e.merchant;
     li.querySelector('.s').textContent = [e.date.split('-').reverse().join('/'), e.client || 'STS general',
-      e.currency !== 'SGD' ? `${e.currency} ${e.total.toFixed(2)}` : ''].filter(Boolean).join(' · ');
+      e.currency !== 'SGD' ? `${e.currency} ${e.total.toFixed(2)}` : '',
+      e.split > 1 ? `split ${e.split} ways` : ''].filter(Boolean).join(' · ');
     if (e.status === 'error') {
       const p = document.createElement('span'); p.className = 's'; p.style.gridColumn = '1 / -1';
       p.textContent = e.error; li.append(p);
@@ -103,11 +104,13 @@ async function readReceipt() {
   const f = form.elements;
   $('#ocr-status').textContent = 'Reading receipt…';
   try {
-    const text = await runOCR(current.original || current.photo, (p) => ($('#ocr-status').textContent = `Reading receipt… ${Math.round(p * 100)}%`));
-    const r = parseReceipt(text);
+    const ocr = await runOCR(current.original || current.photo, (p) => ($('#ocr-status').textContent = `Reading receipt… ${Math.round(p * 100)}%`));
+    const r = parseReceipt(ocr.text, ocr.lines);
     fill({ merchant: r.merchant, date: r.date, total: r.total, pl_line: r.pl_line });
     const pick = guess ? ' The P&L line is a guess. Please check it.' : '';
-    $('#ocr-status').textContent = 'Check the details.' + pick;
+    const tot = r.totalGuess ? ' The total is a guess. Please check it against the receipt.' : '';
+    f.total.classList.toggle('check', !!r.totalGuess);
+    $('#ocr-status').textContent = 'Check the details.' + pick + tot;
   } catch (e) {
     $('#ocr-status').textContent = 'Could not read the receipt. Type the details or tap "Fix with AI".';
   }
@@ -183,8 +186,9 @@ async function updateFx() {
 
 function updateSgdLine() {
   const v = values();
-  $('#sgd-line').textContent = v.sgdAmount > 0 ? `Goes into books: ${sgd(v.sgdAmount)}` +
-    (v.currency === 'SGD' ? ' (same as the receipt total)' : ` (${v.currency} ${v.total.toFixed(2)} converted)`) : '';
+  const note = v.split > 1 ? ` (your share: ${sgd(v.sgdFull)} ÷ ${v.split})`
+    : v.currency === 'SGD' ? ' (same as the receipt total)' : ` (${v.currency} ${v.total.toFixed(2)} converted)`;
+  $('#sgd-line').textContent = v.sgdAmount > 0 ? `Goes into books: ${sgd(v.sgdAmount)}` + note : '';
 }
 
 // Turns the form into the expense record. SGD amounts are what goes into the books.
@@ -195,11 +199,12 @@ function values() {
   const total = r2(f.total.value);
   const foreign = f.currency.value !== 'SGD';
   const sgdTotal = foreign ? r2(f.sgdTotal.value) : total;
+  const split = Math.min(20, Math.max(1, Math.floor(+f.split.value) || 1));   // 1 = you pay it all
   return {
     date: f.date.value, merchant: cleanMerchant(f.merchant.value) || f.merchant.value.trim(),
     description: sentenceCase(f.description.value),
     country: f.country.value, currency: f.currency.value || 'SGD', total,
-    sgdAmount: sgdTotal, sgdGst: 0, sgdManual: foreign && sgdManual,
+    split, sgdFull: sgdTotal, sgdAmount: r2(sgdTotal / split), sgdGst: 0, sgdManual: foreign && sgdManual,   // the books get your share only
     rate: current?.fx?.rate || null, rateSource: current?.fx?.source || 'typed by hand', rateDate: current?.fx?.date || '',
     plLine: f.plLine.value, category: f.category.value.trim(), client: f.client.value,
     paidBy: f.paidBy.value, note: f.note.value.trim(),
@@ -283,7 +288,8 @@ async function start() {
   };
   f.currency.onchange = () => { sgdManual = false; updateFx(); };
   f.date.onchange = updateFx;
-  f.total.oninput = updateFx;
+  f.total.oninput = () => { f.total.classList.remove('check'); updateFx(); };
+  f.split.oninput = updateSgdLine;
   f.sgdTotal.oninput = () => { sgdManual = true; updateSgdLine(); };
   f.plLine.onchange = () => { guess = false; $('#guess-warn').hidden = true; onPlLine(); };
   f.merchant.onchange = () => { applyMemory(); $('#guess-warn').hidden = !guess; };

@@ -27,7 +27,10 @@ async function runOCR(blob, onProgress) {
   });
   try {
     const { data } = await worker.recognize(await prepareForOCR(blob).catch(() => blob));
-    return data.text || '';
+    const lines = (data.lines || []).map((l) => ({
+      text: l.text.trim(), x0: l.bbox.x0, x1: l.bbox.x1, y0: l.bbox.y0, y1: l.bbox.y1,
+    }));
+    return { text: data.text || '', lines };
   } finally {
     await worker.terminate();
   }
@@ -140,7 +143,78 @@ function classifyPL(merchant, text, header) {
   return null;
 }
 
-function parseReceipt(text) {
+// ---------- the total: label + print size + position + repeats ----------
+const T_LABEL = /\b(?:grand\s*)?t[o0]ta[l1i|\]!]\s*(?:amount|due|payable|sgd)?|amount\s*due|net+\s*total|balance\s*due|to\s*pay\b/i;
+const T_GRAND = /grand\s*t[o0]ta[l1i|\]!]/i;
+const T_PAYMENT = /\b(visa|master\s*card|mastercard|amex|diners|nets|paynow|paylah|credit|debit|card)\b/i;
+const T_BAD = /sub\s*-?\s*t[o0]ta|%|discount|disc\b|change|tender|cash\b|received|rcvd|rounding|service|svc|\btip\b/i;
+const T_TAX = /\b(gst|vat|tax)\b/i;
+
+// Every amount on the receipt gets points. The highest score is the total.
+//   + the word "total" / a card payment on the same line     + big print (the total is usually the largest text)
+//   + low on the page (after the items)                      + the same number appears twice (total and payment)
+//   + it is one of the largest numbers                       - discount, tax, service, change, cash lines (subtotal: a little)
+function findTotal(rows) {
+  const heights = rows.map((r) => r.y1 - r.y0).filter((h) => h > 0).sort((a, b) => a - b);
+  const medH = heights.length ? heights[Math.floor(heights.length / 2)] : 1;
+  const cands = [];
+  rows.forEach((r) => {
+    let a = amountsIn(r.text);
+    if (!a.length && !T_BAD.test(r.text) && (T_LABEL.test(r.text) || T_PAYMENT.test(r.text) || (r.y1 - r.y0) / medH > 1.4)) {
+      const m = r.text.match(/(\d{1,4})[\s.,:;'](\d{2})\s*$/);   // "12 00" or "12,00": the decimal point was read as another mark
+      if (m) a = [parseFloat(m[1] + '.' + m[2])];
+    }
+    if (a.length && a[a.length - 1] > 0) cands.push({ r, value: a[a.length - 1], score: 0 });
+  });
+  if (!cands.length) return { value: null, guess: true };
+
+  const y0 = Math.min(...cands.map((c) => c.r.y0)), y1 = Math.max(...cands.map((c) => c.r.y0));
+  // "The total is one of the largest numbers": rank the amounts. Subtotal lines count (the total is never below
+  // the subtotal); discount, service, tax, change and cash lines do not.
+  const T_NOT_TOTAL = /%|discount|disc\b|change|tender|cash\b|received|rcvd|rounding|service|svc|\btip\b/i;
+  const pool = [...new Set(cands
+    .filter((c) => !T_NOT_TOTAL.test(c.r.text) && !(T_TAX.test(c.r.text) && !T_LABEL.test(c.r.text)))
+    .map((c) => c.value))].sort((a, b) => b - a);
+
+  for (const c of cands) {
+    const t = c.r.text, label = T_LABEL.test(t) && !/sub\s*-?\s*t[o0]ta/i.test(t);
+    if (T_GRAND.test(t)) c.score += 6;
+    else if (label) c.score += 5;
+    if (T_PAYMENT.test(t) && !/%|discount/i.test(t)) c.score += 3;
+    if (/sub\s*-?\s*t[o0]ta/i.test(t)) c.score -= 3;          // a subtotal is a weak answer, but better than an item
+    else if (T_BAD.test(t)) c.score -= 8;
+    if (T_TAX.test(t) && !label) c.score -= 8;
+    const ratio = (c.r.y1 - c.r.y0) / medH;                      // print size vs a typical line
+    if (ratio > 1.15) c.score += Math.min(4, 4 * (ratio - 1));
+    c.score += y1 > y0 ? 2 * ((c.r.y0 - y0) / (y1 - y0)) : 0;     // low on the page
+    if (cands.some((o) => o !== c && Math.abs(o.value - c.value) < 0.005)) c.score += 3;   // repeated
+    const rank = pool.indexOf(c.value);
+    if (rank === 0) c.score += 3;                                  // the largest number on the page
+    else if (rank === 1) c.score += 1.5;                           // the second largest
+  }
+  // Paid in cash: the total is the cash handed over minus the change (the cash number is bigger than the total).
+  let derived = null;
+  const CASH = /\b(cash|tendered?|received|rcvd)\b/i, CHANGE = /\bchange\b/i;
+  for (const r of rows) {                                           // "Cash 50.00  Change 39.00" on one line
+    const a = amountsIn(r.text);
+    if (CASH.test(r.text) && CHANGE.test(r.text) && a.length >= 2) { derived = a[0] - a[a.length - 1]; break; }
+  }
+  if (derived == null) {                                            // or on two lines
+    const cashRow = rows.find((r) => CASH.test(r.text) && !CHANGE.test(r.text) && amountsIn(r.text).length);
+    const chgRow = rows.find((r) => CHANGE.test(r.text) && amountsIn(r.text).length);
+    if (cashRow && chgRow) derived = amountsIn(cashRow.text).pop() - amountsIn(chgRow.text).pop();
+  }
+  if (derived != null && derived > 0.004) {
+    derived = Math.round(derived * 100) / 100;
+    const m = cands.find((c) => Math.abs(c.value - derived) < 0.005);
+    if (m) m.score += 6;
+    else cands.push({ r: { text: 'cash minus change' }, value: derived, score: 8 });
+  }
+  cands.sort((a, b) => b.score - a.score);
+  return { value: cands[0].value, guess: cands[0].score < 4 || /sub\s*-?\s*t[o0]ta/i.test(cands[0].r.text) };   // a subtotal is never a sure answer
+}
+
+function parseReceipt(text, layout) {
   text = text.replace(/(?<=[一-鿿])[ 	]+(?=[一-鿿])/g, '');   // Chinese OCR puts spaces between characters
   const lines = text.split('\n').map((l) => l.trim()).filter(Boolean);
   const out = { merchant: '', date: findDate(text), total: null, gst: null, currency: findCurrency(text) };
@@ -149,26 +223,10 @@ function parseReceipt(text) {
 
   out.merchant = pickMerchant(lines);
 
-  // Total, in order of trust: "grand total" -> a "total" line (OCR typos like "Tota]" allowed) ->
-  // the card/payment line ("VISA 12.00") -> the biggest plain amount. Subtotal, discount and "%" lines are never used.
-  const TOTAL = /\b(?:grand\s*)?t[o0]ta[l1i|\]!]\s*(?:amount|due|payable|sgd)?|amount\s*due|net+\s*total|balance\s*due|to\s*pay\b/i;
-  const GRAND = /grand\s*t[o0]ta[l1i|\]!]/i;
-  const PAYMENT = /\b(visa|master\s*card|mastercard|amex|diners|nets|paynow|paylah|credit|debit|card)\b/i;
-  const SKIP = /sub\s*-?\s*t[o0]ta|%|discount|disc\b|change|tender|cash\b|rounding/i;
-  const usable = (l) => !SKIP.test(l) && amountsIn(l).length;
-  for (const re of [GRAND, TOTAL, PAYMENT]) {
-    for (let i = lines.length - 1; i >= 0 && out.total == null; i--) {
-      if (re.test(lines[i]) && (re !== PAYMENT || !/discount|%/i.test(lines[i])) && !/sub\s*-?\s*t[o0]ta/i.test(lines[i])) {
-        const a = amountsIn(lines[i]);
-        if (a.length) out.total = a[a.length - 1];
-      }
-    }
-    if (out.total != null) break;
-  }
-  if (out.total == null) {
-    const all = lines.filter(usable).flatMap(amountsIn);
-    if (all.length) out.total = Math.max(...all);
-  }
+  const rows = layout && layout.length ? layout.filter((r) => r.text) : lines.map((t, i) => ({ text: t, y0: i, y1: i + 1, x1: 0 }));
+  const found = findTotal(rows);
+  out.total = found.value;
+  out.totalGuess = found.guess;
 
   out.pl_line = classifyPL(out.merchant, text, lines.slice(0, 3).join(' '));
   return out;
