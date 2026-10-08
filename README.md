@@ -65,7 +65,8 @@ To correct a saved expense, edit the row in Excel by hand. The app never edits s
 - **P&L line** fills column O of the Expenses sheet. The P&L, Balance Sheet, Forecast and Loans Register add up by this column.
 - **Prepaid** items also need a line on the Prepayments sheet. Ask Claude to "update the books".
 - **Categories** (column D): only "Expense - Professional Fees" is confirmed from Incorpor8's file. The others are suggestions until Incorpor8 sends the full list. You can type any category.
-- **Foreign receipts:** GST is set to 0. The foreign tax is part of the cost. The original amount and rate go in Notes.
+- **GST:** STS is not GST-registered, so GST cannot be claimed back. The whole receipt total is the cost. The app puts the full total in Amount and 0 in the GST column. If STS registers for GST later, ask Claude to change this.
+- **Foreign receipts:** the original amount and rate go in Notes.
 - **After you change app files:** change `VERSION` in `sw.js`, so phones load the new files.
 
 ## Files

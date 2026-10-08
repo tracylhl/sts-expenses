@@ -88,7 +88,7 @@ async function onPhoto(file) {
   f.date.value = todaySGT();
   f.country.value = 'Singapore'; f.currency.value = 'SGD';
   f.paidBy.value = settings.paidBy;
-  f.plLine.value = 'OpEx - Travel & Transport'; onPlLine();
+  f.plLine.value = 'OpEx - General & Admin'; onPlLine();
   options(f.client, clients(), 'STS general (no client)');
   $('#photo').src = URL.createObjectURL(photo);
   show('edit');
@@ -98,7 +98,7 @@ async function onPhoto(file) {
   try {
     const text = await runOCR(photo, (p) => ($('#ocr-status').textContent = `Reading receipt… ${Math.round(p * 100)}%`));
     const r = parseReceipt(text);
-    fill({ merchant: r.merchant, date: r.date, total: r.total, gst: r.gst, currency: r.currency });
+    fill({ merchant: r.merchant, date: r.date, total: r.total, currency: r.currency, pl_line: r.pl_line });
     $('#ocr-status').textContent = 'Check the details. Tap "Fix with AI" if something is wrong.';
   } catch (e) {
     $('#ocr-status').textContent = 'Could not read the receipt. Type the details or tap "Fix with AI".';
@@ -113,12 +113,7 @@ function fill(d) {
   if (d.country && CONFIG.countries.some(([c]) => c === d.country)) f.country.value = d.country;
   if (d.currency && CONFIG.currencies.includes(d.currency)) f.currency.value = d.currency;
   if (d.total != null && !isNaN(d.total)) f.total.value = r2(d.total).toFixed(2);
-  if (d.gst != null && !isNaN(d.gst)) f.gst.value = r2(d.gst).toFixed(2);
   if (d.pl_line && CONFIG.plLines.includes(d.pl_line)) { f.plLine.value = d.pl_line; onPlLine(); }
-  if (f.currency.value === 'SGD' && f.gst.value === '' && f.total.value) {
-    // Singapore prices include GST: GST = total × 9/109.
-    f.gst.value = r2(f.total.value * CONFIG.sgGstRate / (1 + CONFIG.sgGstRate)).toFixed(2);
-  }
   updateFx();
 }
 
@@ -152,20 +147,23 @@ async function updateFx() {
 
 function updateSgdLine() {
   const v = values();
-  $('#sgd-line').textContent = v ? `Goes into books: ${sgd(v.sgdAmount)} + GST ${sgd(v.sgdGst)}` : '';
+  $('#sgd-line').textContent = v.sgdAmount > 0 ? `Goes into books: ${sgd(v.sgdAmount)}` +
+    (v.currency === 'SGD' ? ' (same as the receipt total)' : ` (${v.currency} ${v.total.toFixed(2)} converted)`) : '';
 }
 
 // Turns the form into the expense record. SGD amounts are what goes into the books.
 function values() {
   const f = form.elements;
-  const total = r2(f.total.value), gst = r2(f.gst.value);
+  // STS is not GST-registered, so GST cannot be claimed back: the whole receipt total is the cost.
+  // The books get exactly the receipt total (Amount = total, GST column = 0).
+  const total = r2(f.total.value);
   const foreign = f.currency.value !== 'SGD';
   const sgdTotal = foreign ? r2(f.sgdTotal.value) : total;
-  const sgdGst = foreign ? 0 : gst;   // foreign tax is part of the cost
   return {
-    date: f.date.value, merchant: f.merchant.value.trim(), description: f.description.value.trim(),
-    country: f.country.value, currency: f.currency.value || 'SGD', total, gst,
-    sgdAmount: r2(sgdTotal - sgdGst), sgdGst, sgdManual: foreign && sgdManual,
+    date: f.date.value, merchant: cleanMerchant(f.merchant.value) || f.merchant.value.trim(),
+    description: sentenceCase(f.description.value),
+    country: f.country.value, currency: f.currency.value || 'SGD', total,
+    sgdAmount: sgdTotal, sgdGst: 0, sgdManual: foreign && sgdManual,
     rate: current?.fx?.rate || null, rateSource: current?.fx?.source || 'typed by hand', rateDate: current?.fx?.date || '',
     plLine: f.plLine.value, category: f.category.value.trim(), client: f.client.value,
     paidBy: f.paidBy.value, note: f.note.value.trim(),
@@ -177,7 +175,6 @@ async function onSave(ev) {
   const v = values();
   if (v.currency !== 'SGD' && !(v.sgdAmount > 0)) return toast('Type the SGD total first.');
   if (!(v.sgdAmount > 0)) return toast('The amount must be more than 0.');
-  if (v.gst > v.total) return toast('GST cannot be more than the total.');
   await DB.put({ ...current, ...v, status: 'queued' });
   current = null;
   show('list');
@@ -244,13 +241,11 @@ async function start() {
   f.country.onchange = () => {
     const cur = CONFIG.countries.find(([c]) => c === f.country.value)?.[1];
     if (cur) f.currency.value = cur;
-    if (f.country.value !== 'Singapore') f.gst.value = '0.00';
     sgdManual = false; updateFx();
   };
   f.currency.onchange = () => { sgdManual = false; updateFx(); };
   f.date.onchange = updateFx;
   f.total.oninput = updateFx;
-  f.gst.oninput = updateSgdLine;
   f.sgdTotal.oninput = () => { sgdManual = true; updateSgdLine(); };
   f.plLine.onchange = onPlLine;
   form.onsubmit = onSave;

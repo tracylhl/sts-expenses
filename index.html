@@ -50,10 +50,9 @@
         <label>Country <select name="country"></select></label>
         <label>Currency <select name="currency"></select></label>
       </div>
-      <div class="row">
-        <label>Total paid <input name="total" type="number" step="0.01" min="0" inputmode="decimal" required></label>
-        <label>GST / VAT incl. <input name="gst" type="number" step="0.01" min="0" inputmode="decimal"></label>
-      </div>
+      <label>Total paid (as printed on the receipt, GST included)
+        <input name="total" type="number" step="0.01" min="0" inputmode="decimal" required>
+      </label>
 
       <div class="fx" id="fx-box" hidden>
         <div id="fx-rate"></div>

@@ -3,14 +3,13 @@
 
 const AI_PROMPT = `You read a single receipt photo for a Singapore company's expense records.
 Return JSON only, with these keys:
-merchant (string, shop or supplier name),
-description (string, under 10 words, what was bought),
+merchant (string, the clean shop or supplier name in Title Case, without "Pte Ltd", addresses or codes),
+description (string, under 10 words, what was bought, e.g. "Team lunch" or "Taxi to client workshop"),
 date (YYYY-MM-DD; receipts are usually day-first, e.g. 05/10/2026 is 5 Oct 2026),
 currency (ISO 4217 code, e.g. SGD),
 country (country where the purchase happened),
-total (number, the final amount paid, including tax and service charge),
-gst (number, the GST/VAT amount included in the total, or 0),
-pl_line (one of: ${CONFIG.plLines.join('; ')}).
+total (number, the final amount paid as printed on the receipt, including all tax and service charge; never a subtotal),
+pl_line (the best match, exactly one of: ${CONFIG.plLines.join('; ')}. Food and drink = "OpEx - Meals & Entertainment". Taxi, ride-hailing, flights, hotels, parking, fuel = "OpEx - Travel & Transport". Assessment or psychometric tests = "COGS - Assessment Tools").
 Use null for anything you cannot read.`;
 
 function blobToBase64(blob) {
@@ -40,5 +39,9 @@ async function aiExtract(blob, settings) {
   const data = await res.json();
   if (!res.ok) throw new Error(data.error?.message || `Gemini error ${res.status}`);
   const text = data.candidates?.[0]?.content?.parts?.map((p) => p.text || '').join('') || '{}';
-  return JSON.parse(text.replace(/^```(?:json)?|```$/g, '').trim());
+  const d = JSON.parse(text.replace(/^```(?:json)?|```$/g, '').trim());
+  d.merchant = cleanMerchant(d.merchant);
+  d.description = sentenceCase(d.description);
+  if (!CONFIG.plLines.includes(d.pl_line)) d.pl_line = classifyPL(d.merchant, d.description);
+  return d;
 }

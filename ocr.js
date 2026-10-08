@@ -61,14 +61,71 @@ function findCurrency(text) {
   return null;
 }
 
+// ---------- formatting ----------
+const COMPANY_WORDS = /\b(pte\.?|ltd\.?|private|limited|sdn\.?|bhd\.?|inc\.?|llp|co\.?)\b/gi;
+const NOT_A_NAME = /receipt|tax invoice|invoice|welcome|thank|\btel\b|phone|\bgst\b|\breg\b|cashier|\border\b|\btable\b|\bdate\b|\btime\b|www\.|\.com/i;
+const KNOWN_ACRONYMS = ['NTUC', 'DBS', 'UOB', 'OCBC', 'SMRT', 'SBS', 'IKEA', 'NUS', 'NTU', 'CDG', 'ERP', 'MRT', 'DHL', 'UPS'];
+
+function titleCase(s) {
+  return s.split(' ').map((w) => {
+    if (/^[A-Z]{2,5}$/.test(w) && (!/[AEIOU]/.test(w) || KNOWN_ACRONYMS.includes(w))) return w;   // KFC, NTUC, DBS stay
+    if (/^&$/.test(w)) return w;
+    return w.toLowerCase().replace(/(^|[-(])([a-z])/g, (m, p, c) => p + c.toUpperCase());
+  }).join(' ');
+}
+
+// Turns messy OCR text such as "|§ KOPITIAM caFE 7 PTE LTD" into "Kopitiam Cafe".
+function cleanMerchant(raw) {
+  let s = String(raw || '').replace(COMPANY_WORDS, ' ');
+  s = s.replace(/[^\p{L}\p{N}&'\-. ]/gu, ' ').replace(/(?<=\p{L})0(?=\p{L})/gu, 'o');   // OCR reads the letter o as zero
+  const words = s.split(/\s+/).map((w) => w.replace(/^[-'.]+|[-'.]+$/g, '')).filter((w) => {
+    if (w === '&') return true;
+    const letters = (w.match(/\p{L}/gu) || []).length;
+    return letters >= 2 && letters / w.length >= 0.7;           // drops stray symbols, digits and mixed junk
+  });
+  return titleCase(words.join(' ')).slice(0, 60).trim();
+}
+
+function pickMerchant(lines) {
+  for (const l of lines.slice(0, 8)) {
+    if (NOT_A_NAME.test(l)) continue;
+    const c = cleanMerchant(l);
+    if ((c.match(/\p{L}/gu) || []).length >= 3) return c;
+  }
+  return '';
+}
+
+function sentenceCase(s) {
+  s = String(s || '').replace(/\s+/g, ' ').trim();
+  return s ? s.charAt(0).toUpperCase() + s.slice(1) : '';
+}
+
+// ---------- P&L line from the words on the receipt ----------
+const PL_RULES = [
+  ['COGS - Assessment Tools', /\b(rheti|enneagram|assessment|psychometric|hogan|mbti|talentsmart|strengthsfinder|disc profile)\b/i],
+  ['OpEx - Software & Subscriptions', /\b(subscription|software|saas|cloud|hosting|domain|zoom|microsoft|office 365|google workspace|adobe|canva|openai|anthropic|github|dropbox|notion|slack|itunes|app store|linkedin|squarespace|godaddy|namecheap)\b/i],
+  ['OpEx - Travel & Transport', /\b(grab|gojek|taxi|cab|comfortdelgro|cdg|tada|ryde|uber|mrt|smrt|sbs transit|ez-?link|transitlink|petrol|shell|esso|caltex|spc|parking|erp|airline|airlines|airways|scoot|jetstar|airasia|flight|boarding|hotel|resort|airbnb|booking\.com|agoda|hostel|train|ferry|toll|car rental|hertz|bus|metro|subway ticket)\b/i],
+  ['OpEx - Meals & Entertainment', /\b(restaurant|cafe|café|coffee|kopi|kopitiam|bistro|bar|pub|grill|kitchen|diner|eatery|food|bakery|bread|toast|laksa|noodles?|rice|chicken|pizza|burger|sushi|ramen|starbucks|mcdonald'?s|kfc|ya kun|dining|catering|lunch|dinner|breakfast|tea|bubble tea|gong cha|liho|koi|deli|buffet|meal|beverage|drinks?|dessert|ice cream|hawker|izakaya|brunch)\b/i],
+  ['OpEx - General & Admin', /\b(stationery|office|printer|ink|toner|paper|popular|daiso|ikea|courier|postage|singpost|lalamove|print|photocopy|bank charge|bank fee)\b/i],
+];
+
+function classifyPL(merchant, text) {
+  for (const [line, re] of PL_RULES) if (re.test(merchant || '')) return line;   // the shop name is the strongest hint
+  let best = null, bestHits = 0;
+  for (const [line, re] of PL_RULES) {
+    const hits = (String(text || '').match(new RegExp(re.source, 'gi')) || []).length;
+    if (hits > bestHits) { best = line; bestHits = hits; }
+  }
+  return best || 'OpEx - General & Admin';
+}
+
 function parseReceipt(text) {
   const lines = text.split('\n').map((l) => l.trim()).filter(Boolean);
   const out = { merchant: '', date: findDate(text), total: null, gst: null, currency: findCurrency(text) };
   wholeAmounts = NO_DECIMALS.includes(out.currency) && !AMOUNT_RE.test(text);
   AMOUNT_RE.lastIndex = 0;
 
-  out.merchant = (lines.find((l) => /[A-Za-z]{3,}/.test(l) &&
-    !/receipt|tax invoice|invoice|welcome|thank/i.test(l)) || '').replace(/[^\w&'.,\- ]/g, '').trim();
+  out.merchant = pickMerchant(lines);
 
   // Total: prefer "grand total", then other total-like lines, searching from the bottom.
   const totalRes = [/grand\s*total/i, /(total\s*(amount|due|payable|sgd)?|amount\s*due|net+\s*total|balance\s*due|to\s*pay)/i];
@@ -86,12 +143,6 @@ function parseReceipt(text) {
     if (all.length) out.total = Math.max(...all);
   }
 
-  // GST: an amount on a GST/VAT line that is smaller than the total.
-  for (const l of lines) {
-    if (/\b(gst|vat)\b/i.test(l)) {
-      const a = amountsIn(l).filter((x) => out.total == null || x < out.total);
-      if (a.length) { out.gst = a[a.length - 1]; break; }
-    }
-  }
+  out.pl_line = classifyPL(out.merchant, text);
   return out;
 }
